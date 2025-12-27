@@ -436,7 +436,38 @@ Tu devrais voir le port 2222 ouvert.
 
 > ⚠️ **IMPORTANT** : Garde ta session SSH actuelle ouverte pendant toute cette section !
 
-### 6.1 Modifier la configuration SSH
+### 6.1 Comprendre SSH sur Ubuntu 24.04
+
+Ubuntu 24.04 utilise **socket activation** (`ssh.socket`) qui contrôle le port d'écoute. Le fichier `sshd_config` seul ne suffit plus pour changer le port !
+
+```
+ssh.socket    → Contrôle le PORT d'écoute
+sshd_config   → Contrôle les OPTIONS (auth, clés, etc.)
+```
+
+### 6.2 Changer le port SSH (via ssh.socket)
+
+```bash
+# Créer un override pour ssh.socket
+systemctl edit ssh.socket
+```
+
+Un éditeur s'ouvre. Ajoute ce contenu **entre les lignes de commentaires** :
+
+```ini
+[Socket]
+ListenStream=
+ListenStream=0.0.0.0:2222
+ListenStream=[::]:2222
+```
+
+> ⚠️ Le premier `ListenStream=` vide est **obligatoire** pour effacer la valeur par défaut (22).
+> 
+> ⚠️ Les deux lignes suivantes sont nécessaires pour écouter en IPv4 ET IPv6.
+
+Sauvegarde et quitte (`Ctrl+O`, `Enter`, `Ctrl+X` si nano).
+
+### 6.3 Modifier les options SSH (sshd_config)
 
 ```bash
 nano /etc/ssh/sshd_config
@@ -445,7 +476,7 @@ nano /etc/ssh/sshd_config
 Modifie/ajoute ces lignes :
 
 ```bash
-# Changer le port
+# Le port est géré par ssh.socket, mais on le met ici aussi pour cohérence
 Port 2222
 
 # Désactiver l'accès root par mot de passe (clé uniquement)
@@ -466,7 +497,7 @@ KbdInteractiveAuthentication no
 X11Forwarding no
 ```
 
-### 6.2 Tester la syntaxe
+### 6.4 Tester la syntaxe sshd_config
 
 ```bash
 sshd -t
@@ -474,29 +505,59 @@ sshd -t
 
 Si aucune erreur ne s'affiche, la config est valide.
 
-### 6.3 Redémarrer SSH
+### 6.5 Appliquer les changements
 
 ```bash
+# Recharger systemd
+systemctl daemon-reload
+
+# Redémarrer le socket ET le service
+systemctl restart ssh.socket
 systemctl restart ssh
 ```
 
-### 6.4 Tester la connexion (NOUVELLE session)
+### 6.6 Vérifier que SSH écoute sur le bon port
+
+```bash
+ss -tlnp | grep ssh
+```
+
+**Résultat attendu** (les deux lignes sont importantes) :
+
+```
+LISTEN 0  4096   0.0.0.0:2222   0.0.0.0:*  users:(("sshd",...))
+LISTEN 0  4096      [::]:2222      [::]:*  users:(("sshd",...))
+```
+
+> ⚠️ Si tu ne vois que la ligne `[::]` (IPv6), SSH n'écoutera pas sur Tailscale (qui utilise IPv4). Vérifie que tu as bien les deux `ListenStream` dans le socket override.
+
+### 6.7 Tester la connexion (NOUVELLE session)
 
 **Ne ferme pas ta session actuelle !**
 
-Ouvre un **nouveau** terminal et teste :
+D'abord, mets à jour le fichier config SSH sur tes devices pour utiliser le nouveau port.
 
-Depuis Windows (PowerShell) :
+**Windows** - Édite `C:\Users\TonUsername\.ssh\config` :
 
-```powershell
-ssh -p 2222 root@100.100.100.30
+```
+Host vps
+    HostName 100.100.100.30
+    Port 2222
+    User root
+    IdentityFile C:/Users/TonUsername/.ssh/id_ed25519_vps
+
+Host vps-public
+    HostName 203.0.113.50
+    Port 2222
+    User root
+    IdentityFile C:/Users/TonUsername/.ssh/id_ed25519_vps
 ```
 
-Ou avec la config (après mise à jour du port dans `~/.ssh/config`) :
+**Steam Deck** - Édite `~/.ssh/config` :
 
-D'abord, mets à jour le fichier config pour utiliser le port 2222 :
-
-**Windows** (`C:\Users\TonUsername\.ssh\config`) :
+```bash
+nano ~/.ssh/config
+```
 
 ```
 Host vps
@@ -512,22 +573,40 @@ Host vps-public
     IdentityFile ~/.ssh/id_ed25519_vps
 ```
 
-**Steam Deck** (`~/.ssh/config`) : même modification.
-
-Puis teste :
+Puis teste depuis un **nouveau terminal** :
 
 ```bash
 ssh vps
 ```
 
-### 6.5 Supprimer l'ancien port 22 de UFW
+### 6.8 Supprimer l'ancien port 22 de UFW
 
-Une fois que la connexion sur le port 2222 fonctionne :
+Une fois que la connexion sur le nouveau port fonctionne :
 
 1. Va dans CloudPanel → **Admin Area** → **Security** → **Firewall**
 2. **Supprime** la règle `22` avec source `0.0.0.0/0`
 
 Le port 22 reste accessible via Tailscale grâce à la règle `tailscale0`.
+
+### 6.9 Dépannage
+
+**"Connection refused"** après changement de port :
+
+```bash
+# Vérifier que SSH écoute
+ss -tlnp | grep ssh
+
+# Si vide ou mauvais port, vérifier l'override socket
+cat /etc/systemd/system/ssh.socket.d/override.conf
+
+# Redémarrer proprement
+systemctl daemon-reload
+systemctl restart ssh.socket ssh
+```
+
+**SSH écoute seulement en IPv6** (`[::]:2222` mais pas `0.0.0.0:2222`) :
+
+Le fichier override est incomplet. Refais l'étape 6.2 avec les deux lignes `ListenStream`.
 
 ---
 
