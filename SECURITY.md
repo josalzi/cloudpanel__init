@@ -1,6 +1,6 @@
 # Guide Complet : Sécurisation VPS CloudPanel avec CrowdSec
 
-## Ubuntu 24.04 + CloudPanel + CrowdSec + UFW + Tailscale
+## Ubuntu 24.04 + CloudPanel + CrowdSec + Tailscale
 
 > **Temps estimé** : 45-60 minutes  
 > **Niveau** : Intermédiaire  
@@ -9,33 +9,53 @@
 
 ---
 
-## Table des matières
+## Ordre d'exécution
 
-1. [Préparation et prérequis](#1-préparation-et-prérequis)
-2. [Tailscale - VPN Mesh Zero-Config](#2-tailscale---vpn-mesh-zero-config)
-3. [Gestion des clés SSH multi-devices](#3-gestion-des-clés-ssh-multi-devices)
-4. [Hardening SSH](#4-hardening-ssh)
-5. [Configuration UFW](#5-configuration-ufw)
-6. [Installation CrowdSec](#6-installation-crowdsec)
-7. [Configuration pour CloudPanel](#7-configuration-pour-cloudpanel)
-8. [Installation des Bouncers](#8-installation-des-bouncers)
-9. [Collections et Scénarios](#9-collections-et-scénarios)
-10. [CrowdSec Console](#10-crowdsec-console)
-11. [Whitelisting intelligent](#11-whitelisting-intelligent)
-12. [Mises à jour automatiques](#12-mises-à-jour-automatiques)
-13. [Commandes de maintenance](#13-commandes-de-maintenance)
-14. [Tests et validation](#14-tests-et-validation)
-15. [Workflow nomade - Checklist escale](#15-workflow-nomade---checklist-escale)
+L'ordre est **crucial** pour ne pas se bloquer l'accès :
+
+1. Tailscale sur VPS (accès de secours garanti)
+2. Tailscale sur tes devices (PC + Steam Deck)
+3. Clés SSH (génération + déploiement)
+4. UFW via CloudPanel (ouvrir le nouveau port SSH)
+5. Hardening SSH (changer le port, désactiver passwords)
+6. CrowdSec (protection)
 
 ---
 
-## 1. Préparation et prérequis
+## Table des matières
+
+1. [Préparation du VPS](#1-préparation-du-vps)
+2. [Tailscale - Installation VPS](#2-tailscale---installation-vps)
+3. [Tailscale - Installation Devices](#3-tailscale---installation-devices)
+4. [Clés SSH multi-devices](#4-clés-ssh-multi-devices)
+5. [UFW via CloudPanel](#5-ufw-via-cloudpanel)
+6. [Hardening SSH](#6-hardening-ssh)
+7. [Installation CrowdSec](#7-installation-crowdsec)
+8. [Configuration CrowdSec pour CloudPanel](#8-configuration-crowdsec-pour-cloudpanel)
+9. [Bouncers CrowdSec](#9-bouncers-crowdsec)
+10. [Collections et Scénarios](#10-collections-et-scénarios)
+11. [CrowdSec Console](#11-crowdsec-console)
+12. [Whitelisting Tailscale](#12-whitelisting-tailscale)
+13. [Mises à jour automatiques](#13-mises-à-jour-automatiques)
+14. [Commandes de maintenance](#14-commandes-de-maintenance)
+15. [Tests et validation](#15-tests-et-validation)
+16. [Workflow nomade](#16-workflow-nomade)
+
+---
+
+## 1. Préparation du VPS
+
+Connecte-toi à ton VPS via SSH (méthode actuelle) :
+
+```bash
+ssh root@ton-ip-publique-vps
+```
 
 ### 1.1 Mise à jour du système
 
 ```bash
-sudo apt update && sudo apt upgrade -y
-sudo apt install curl gnupg lsb-release software-properties-common -y
+apt update && apt upgrade -y
+apt install curl gnupg lsb-release software-properties-common -y
 ```
 
 ### 1.2 Vérification de la synchronisation horaire
@@ -43,89 +63,85 @@ sudo apt install curl gnupg lsb-release software-properties-common -y
 CrowdSec dépend de timestamps précis :
 
 ```bash
-sudo timedatectl set-ntp true
+timedatectl set-ntp true
 timedatectl status
 ```
 
 Tu devrais voir `NTP service: active`.
 
-### 1.3 Backup de la configuration SSH actuelle
+### 1.3 Sauvegarder la config SSH actuelle
 
 ```bash
-sudo cp /etc/ssh/sshd_config /etc/ssh/sshd_config.backup
+cp /etc/ssh/sshd_config /etc/ssh/sshd_config.backup
 ```
-
-### 1.4 Note importante sur les ports CloudPanel
-
-CloudPanel utilise les ports suivants :
-- **8443** : Interface web CloudPanel
-- **22** : SSH (que nous allons changer)
-- **80/443** : HTTP/HTTPS
-- **3306** : MariaDB (localhost uniquement)
 
 ---
 
-## 2. Tailscale - VPN Mesh Zero-Config
+## 2. Tailscale - Installation VPS
 
-### Pourquoi Tailscale ?
+> ⚠️ On installe Tailscale EN PREMIER pour avoir un accès de secours si on se bloque avec SSH/UFW.
 
-En tant que pilote, tu te connectes depuis des WiFi d'hôtels avec des IPs qui changent à chaque escale. Impossible de whitelister ces IPs. Tailscale résout ce problème :
-
-- **IP stable** : Ton Steam Deck aura toujours la même IP Tailscale (ex: `100.x.x.x`)
-- **Zero-config** : Une fois installé, ça marche. Pas de reconfiguration à chaque hôtel
-- **Traverse les NAT** : Fonctionne même derrière les WiFi restrictifs d'hôtels
-- **Chiffrement WireGuard** : Sécurisé de bout en bout
-- **Gratuit** : Jusqu'à 100 devices pour usage personnel
-
-### 2.1 Architecture cible
-
-```
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│   PC Windows    │     │   Steam Deck    │     │   VPS Hostinger │
-│   (Laragon)     │     │   (ArchLinux)   │     │   (CloudPanel)  │
-│                 │     │                 │     │                 │
-│ Tailscale IP:   │     │ Tailscale IP:   │     │ Tailscale IP:   │
-│ 100.x.x.10      │     │ 100.x.x.20      │     │ 100.x.x.30      │
-└────────┬────────┘     └────────┬────────┘     └────────┬────────┘
-         │                       │                       │
-         └───────────────────────┴───────────────────────┘
-                        Tailscale Mesh Network
-                     (fonctionne partout dans le monde)
-```
-
-### 2.2 Créer un compte Tailscale
+### 2.1 Créer un compte Tailscale
 
 1. Va sur [https://tailscale.com](https://tailscale.com)
 2. Crée un compte (GitHub, Google, ou email)
-3. Note ton "Tailnet name" (ex: `joey-pilot.ts.net`)
+3. Note ton "Tailnet name" (ex: `joey.ts.net`)
 
-### 2.3 Installation sur le VPS (Ubuntu 24.04)
+### 2.2 Installation sur le VPS
 
 ```bash
-# Ajouter le dépôt Tailscale
+# Installer Tailscale
 curl -fsSL https://tailscale.com/install.sh | sh
 
-# Démarrer Tailscale
-sudo tailscale up
-
-# Tu verras un lien d'authentification - ouvre-le dans ton navigateur
-# Exemple: https://login.tailscale.com/a/xxxxxxxxxxxx
+# Démarrer et authentifier
+tailscale up
 ```
 
-Après authentification :
+Un lien d'authentification s'affiche. Ouvre-le dans ton navigateur et autorise le VPS.
+
+### 2.3 Vérifier et noter l'IP Tailscale du VPS
 
 ```bash
-# Vérifier l'IP Tailscale du VPS
 tailscale ip -4
-# Exemple output: 100.100.100.30
+```
 
-# Vérifier le statut
+**Note cette IP** (ex: `100.100.100.30`), tu en auras besoin pour la config SSH.
+
+### 2.4 Désactiver l'expiration de clé (important pour un serveur)
+
+1. Va sur [https://login.tailscale.com/admin/machines](https://login.tailscale.com/admin/machines)
+2. Trouve ton VPS dans la liste
+3. Clique sur le menu `...` → **Disable key expiry**
+
+### 2.5 Vérifier que Tailscale fonctionne
+
+```bash
 tailscale status
 ```
 
-### 2.4 Installation sur le Steam Deck (ArchLinux)
+Tu devrais voir ton VPS listé comme "online".
 
-En mode Desktop sur ton Steam Deck :
+---
+
+## 3. Tailscale - Installation Devices
+
+### 3.1 Sur Windows (PC Laragon)
+
+1. Télécharge l'installer : [https://tailscale.com/download/windows](https://tailscale.com/download/windows)
+2. Installe et connecte-toi avec le **même compte** que le VPS
+3. L'icône Tailscale apparaît dans la barre des tâches
+
+**Vérifier l'IP Tailscale Windows** (PowerShell) :
+
+```powershell
+tailscale ip -4
+```
+
+Note cette IP (ex: `100.100.100.10`).
+
+### 3.2 Sur Steam Deck (ArchLinux)
+
+En mode Desktop, ouvre Konsole :
 
 ```bash
 # Désactiver le read-only filesystem temporairement
@@ -141,174 +157,301 @@ sudo pacman -S tailscale
 # Activer et démarrer le service
 sudo systemctl enable --now tailscaled
 
-# Se connecter
+# Se connecter (même compte que VPS et PC)
 sudo tailscale up
 
-# Réactiver le read-only (optionnel mais recommandé)
+# Réactiver le read-only
 sudo steamos-readonly enable
 ```
 
-> **Alternative sans désactiver read-only** : Utiliser Flatpak ou l'app Tailscale depuis Discover.
-
-### 2.5 Installation sur Windows (PC Laragon)
-
-1. Télécharge l'installer depuis [tailscale.com/download](https://tailscale.com/download)
-2. Installe et connecte-toi avec le même compte
-3. L'icône Tailscale apparaît dans la barre des tâches
-
-### 2.6 Configuration Tailscale pour le VPS
-
-Quelques options utiles sur le VPS :
+**Vérifier l'IP Tailscale Steam Deck** :
 
 ```bash
-# Accepter les routes (si tu veux accéder à d'autres machines via le VPS)
-sudo tailscale up --accept-routes
-
-# Désactiver l'expiration de la clé (important pour un serveur)
-# Va sur https://login.tailscale.com/admin/machines
-# Clique sur ton VPS → "Disable key expiry"
+tailscale ip -4
 ```
 
-### 2.7 Tester la connectivité
+Note cette IP (ex: `100.100.100.20`).
 
-Depuis ton Steam Deck ou PC :
+### 3.3 Tester la connectivité Tailscale
+
+Depuis ton PC Windows (PowerShell) ou Steam Deck :
 
 ```bash
-# Ping le VPS via Tailscale
-ping 100.x.x.30  # Remplace par l'IP Tailscale de ton VPS
-
-# SSH via Tailscale (fonctionne de n'importe où dans le monde!)
-ssh -p 2222 root@100.x.x.30
+# Ping le VPS via son IP Tailscale
+ping 100.100.100.30
 ```
+
+Si ça répond, Tailscale fonctionne. Tu as maintenant un accès de secours garanti.
 
 ---
 
-## 3. Gestion des clés SSH multi-devices
+## 4. Clés SSH multi-devices
 
-### 3.1 Pourquoi une clé par device ?
+### 4.1 Pourquoi une clé par device ?
 
 - **Révocation indépendante** : Si tu perds ton Steam Deck, tu révoques uniquement sa clé
 - **Traçabilité** : Tu sais quel device s'est connecté
 - **Sécurité** : Pas de copie de clé privée entre machines
 
-### 3.2 Générer la clé sur le PC Windows (Laragon)
+### 4.2 Générer la clé sur Windows (PC Laragon)
+
+Ouvre PowerShell :
 
 ```powershell
-# PowerShell ou Git Bash
-ssh-keygen -t ed25519 -C "joey-pc-windows" -f ~/.ssh/id_ed25519_vps
+# Créer le dossier .ssh s'il n'existe pas
+mkdir -Force $env:USERPROFILE\.ssh
+
+# Générer la clé (sans passphrase : appuie Enter deux fois)
+ssh-keygen -t ed25519 -C "joey-pc-windows" -f $env:USERPROFILE\.ssh\id_ed25519_vps
 ```
 
 Cela crée :
-- `~/.ssh/id_ed25519_vps` (clé privée)
-- `~/.ssh/id_ed25519_vps.pub` (clé publique)
+- `C:\Users\TonUsername\.ssh\id_ed25519_vps` (clé privée)
+- `C:\Users\TonUsername\.ssh\id_ed25519_vps.pub` (clé publique)
 
-### 3.3 Générer la clé sur le Steam Deck (ArchLinux)
+**Afficher la clé publique pour la copier** :
+
+```powershell
+Get-Content $env:USERPROFILE\.ssh\id_ed25519_vps.pub
+```
+
+Copie le contenu affiché (commence par `ssh-ed25519`).
+
+### 4.3 Générer la clé sur Steam Deck
+
+En mode Desktop, ouvre Konsole :
 
 ```bash
-# En mode Desktop, ouvre Konsole
-ssh-keygen -t ed25519 -C "joey-steamdeck" -f ~/.ssh/id_ed25519_vps
+# Créer le dossier .ssh s'il n'existe pas
+mkdir -p ~/.ssh
+chmod 700 ~/.ssh
 
-# Afficher la clé publique pour la copier
+# Générer la clé (sans passphrase : appuie Enter deux fois)
+ssh-keygen -t ed25519 -C "joey-steamdeck" -f ~/.ssh/id_ed25519_vps
+```
+
+**Afficher la clé publique** :
+
+```bash
 cat ~/.ssh/id_ed25519_vps.pub
 ```
 
-### 3.4 Configurer le fichier SSH config (sur chaque device)
+Copie le contenu.
 
-Crée/édite `~/.ssh/config` :
+### 4.4 Ajouter les clés publiques sur le VPS
 
-**Sur Windows** (`C:\Users\Joey\.ssh\config`) :
-
-```
-Host vps
-    HostName 100.x.x.30
-    Port 2222
-    User root
-    IdentityFile ~/.ssh/id_ed25519_vps
-
-Host vps-public
-    HostName ton-ip-publique-vps
-    Port 2222
-    User root
-    IdentityFile ~/.ssh/id_ed25519_vps
-```
-
-**Sur Steam Deck** (`~/.ssh/config`) :
-
-```
-Host vps
-    HostName 100.x.x.30
-    Port 2222
-    User root
-    IdentityFile ~/.ssh/id_ed25519_vps
-
-Host vps-public
-    HostName ton-ip-publique-vps
-    Port 2222
-    User root
-    IdentityFile ~/.ssh/id_ed25519_vps
-```
-
-Maintenant tu peux simplement faire :
+Sur le VPS (connecté via SSH classique pour l'instant) :
 
 ```bash
-ssh vps
-# Au lieu de : ssh -p 2222 -i ~/.ssh/id_ed25519_vps root@100.x.x.30
-```
-
-### 3.5 Ajouter les clés publiques sur le VPS
-
-Sur le VPS, ajoute les deux clés publiques :
-
-```bash
+# Éditer le fichier authorized_keys
 nano ~/.ssh/authorized_keys
 ```
 
-Ajoute une ligne par clé :
+Ajoute les deux clés publiques (une par ligne) :
 
 ```
-ssh-ed25519 AAAA...reste-de-la-clé... joey-pc-windows
-ssh-ed25519 AAAA...reste-de-la-clé... joey-steamdeck
+ssh-ed25519 AAAA...clé-complete... joey-pc-windows
+ssh-ed25519 AAAA...clé-complete... joey-steamdeck
 ```
 
-### 3.6 Permissions correctes
+Sauvegarde (`Ctrl+O`, `Enter`, `Ctrl+X`).
+
+**Corriger les permissions** :
 
 ```bash
 chmod 700 ~/.ssh
 chmod 600 ~/.ssh/authorized_keys
 ```
 
-### 3.7 Révocation d'urgence (si perte d'un device)
+### 4.5 Configurer le fichier SSH config sur Windows
 
-Si tu perds ton Steam Deck :
+Crée/édite le fichier `C:\Users\TonUsername\.ssh\config` :
+
+```powershell
+notepad $env:USERPROFILE\.ssh\config
+```
+
+Contenu :
+
+```
+# Connexion via Tailscale (utiliser celle-ci)
+Host vps
+    HostName 100.100.100.30
+    Port 22
+    User root
+    IdentityFile ~/.ssh/id_ed25519_vps
+
+# Connexion de secours via IP publique
+Host vps-public
+    HostName 203.0.113.50
+    Port 22
+    User root
+    IdentityFile ~/.ssh/id_ed25519_vps
+```
+
+> **Note** : Remplace `100.100.100.30` par l'IP Tailscale de ton VPS et `203.0.113.50` par son IP publique Hostinger.
+> 
+> **Note 2** : Le port est encore 22. On le changera après avoir configuré UFW.
+
+### 4.6 Configurer le fichier SSH config sur Steam Deck
 
 ```bash
-# Sur le VPS, édite authorized_keys
-nano ~/.ssh/authorized_keys
-# Supprime la ligne contenant "joey-steamdeck"
+nano ~/.ssh/config
 ```
+
+Même contenu :
+
+```
+# Connexion via Tailscale (utiliser celle-ci)
+Host vps
+    HostName 100.100.100.30
+    Port 22
+    User root
+    IdentityFile ~/.ssh/id_ed25519_vps
+
+# Connexion de secours via IP publique
+Host vps-public
+    HostName 203.0.113.50
+    Port 22
+    User root
+    IdentityFile ~/.ssh/id_ed25519_vps
+```
+
+**Permissions** :
+
+```bash
+chmod 600 ~/.ssh/config
+```
+
+### 4.7 Tester la connexion avec clé SSH
+
+Depuis Windows (PowerShell) :
+
+```powershell
+ssh vps
+```
+
+Depuis Steam Deck :
+
+```bash
+ssh vps
+```
+
+Tu devrais te connecter **sans mot de passe** (grâce à la clé SSH).
+
+> ⚠️ Si ça ne fonctionne pas, vérifie que les clés publiques sont bien dans `authorized_keys` sur le VPS.
 
 ---
 
-## 4. Hardening SSH
+## 5. UFW via CloudPanel
 
-> Les clés SSH sont déjà gérées dans la section 3. Ici on configure le serveur SSH.
+### 5.1 Accéder à l'interface Firewall
 
-### 4.1 Configuration SSH sécurisée
+1. Connecte-toi à CloudPanel : `https://ton-ip-publique:8443`
+2. Va dans **Admin Area** → **Security** → **Firewall**
+
+### 5.2 Ajouter les nouvelles règles
+
+Clique sur **Add Rule** pour chaque règle :
+
+| Port Range | Source | Description |
+|------------|--------|-------------|
+| `2222` | `0.0.0.0/0` | SSH Custom Port |
+| `80` | `0.0.0.0/0` | HTTP |
+| `443` | `0.0.0.0/0` | HTTPS |
+| `8443` | `100.64.0.0/10` | CloudPanel Tailscale Only |
+
+> 💡 La règle `8443` avec source `100.64.0.0/10` signifie que CloudPanel ne sera accessible **que via Tailscale**.
+
+### 5.3 Modifier/Supprimer les anciennes règles
+
+- **Garde** la règle `22` avec `0.0.0.0/0` pour l'instant (on la supprimera après avoir testé le port 2222)
+- **Supprime** la règle `8443` avec `0.0.0.0/0` si elle existe (remplacée par notre règle Tailscale)
+
+### 5.4 Ajouter la règle Tailscale interface (CLI)
+
+L'interface CloudPanel ne permet pas de créer des règles sur une interface réseau. Connecte-toi au VPS :
 
 ```bash
-sudo nano /etc/ssh/sshd_config
+ssh vps
 ```
 
-Modifier/ajouter ces lignes :
+Puis :
 
 ```bash
-# Changer le port (choisis un port entre 10000-65535)
+# Autoriser tout le trafic depuis l'interface Tailscale
+ufw allow in on tailscale0 comment 'Tailscale Interface'
+
+# Vérifier
+ufw status | grep tailscale
+```
+
+### 5.5 Protéger la règle Tailscale avec un script
+
+CloudPanel peut écraser les règles CLI. Créons un script de protection :
+
+```bash
+nano /usr/local/bin/ensure-tailscale-ufw.sh
+```
+
+Contenu :
+
+```bash
+#!/bin/bash
+# Ensure Tailscale UFW rule exists
+
+if ! ufw status | grep -q "tailscale0"; then
+    ufw allow in on tailscale0 comment 'Tailscale Interface'
+    echo "$(date): Tailscale UFW rule restored" >> /var/log/tailscale-ufw.log
+fi
+```
+
+Rendre exécutable et ajouter au cron :
+
+```bash
+chmod +x /usr/local/bin/ensure-tailscale-ufw.sh
+
+# Ajouter au cron
+crontab -e
+```
+
+Ajoute ces lignes :
+
+```
+@reboot /usr/local/bin/ensure-tailscale-ufw.sh
+0 * * * * /usr/local/bin/ensure-tailscale-ufw.sh
+```
+
+### 5.6 Vérifier la config UFW
+
+```bash
+ufw status numbered
+```
+
+Tu devrais voir le port 2222 ouvert.
+
+---
+
+## 6. Hardening SSH
+
+> ⚠️ **IMPORTANT** : Garde ta session SSH actuelle ouverte pendant toute cette section !
+
+### 6.1 Modifier la configuration SSH
+
+```bash
+nano /etc/ssh/sshd_config
+```
+
+Modifie/ajoute ces lignes :
+
+```bash
+# Changer le port
 Port 2222
 
-# Désactiver l'accès root par mot de passe
+# Désactiver l'accès root par mot de passe (clé uniquement)
 PermitRootLogin prohibit-password
 
-# Désactiver l'authentification par mot de passe (APRÈS avoir testé tes clés!)
+# Désactiver l'authentification par mot de passe
 PasswordAuthentication no
 
 # Autres paramètres de sécurité
@@ -318,176 +461,93 @@ LoginGraceTime 30
 ClientAliveInterval 300
 ClientAliveCountMax 2
 
-# Désactiver les méthodes d'auth non utilisées
-ChallengeResponseAuthentication no
-UsePAM yes
+# Désactiver les méthodes non utilisées
+KbdInteractiveAuthentication no
 X11Forwarding no
-
-# Autoriser uniquement certains utilisateurs (optionnel)
-# AllowUsers root ton-user
 ```
 
-### 4.2 Tester la configuration SSH
+### 6.2 Tester la syntaxe
 
 ```bash
-sudo sshd -t
+sshd -t
 ```
 
-Si pas d'erreur :
+Si aucune erreur ne s'affiche, la config est valide.
+
+### 6.3 Redémarrer SSH
 
 ```bash
-sudo systemctl restart sshd
+systemctl restart ssh
 ```
 
-> ⚠️ **IMPORTANT** : Garde ta session SSH actuelle ouverte et ouvre une NOUVELLE session pour tester la connexion sur le nouveau port avant de fermer l'ancienne !
+### 6.4 Tester la connexion (NOUVELLE session)
+
+**Ne ferme pas ta session actuelle !**
+
+Ouvre un **nouveau** terminal et teste :
+
+Depuis Windows (PowerShell) :
+
+```powershell
+ssh -p 2222 root@100.100.100.30
+```
+
+Ou avec la config (après mise à jour du port dans `~/.ssh/config`) :
+
+D'abord, mets à jour le fichier config pour utiliser le port 2222 :
+
+**Windows** (`C:\Users\TonUsername\.ssh\config`) :
+
+```
+Host vps
+    HostName 100.100.100.30
+    Port 2222
+    User root
+    IdentityFile ~/.ssh/id_ed25519_vps
+
+Host vps-public
+    HostName 203.0.113.50
+    Port 2222
+    User root
+    IdentityFile ~/.ssh/id_ed25519_vps
+```
+
+**Steam Deck** (`~/.ssh/config`) : même modification.
+
+Puis teste :
 
 ```bash
-# Via Tailscale (recommandé - fonctionne de n'importe où)
 ssh vps
-
-# Ou directement
-ssh -p 2222 -i ~/.ssh/id_ed25519_vps root@100.x.x.30
 ```
+
+### 6.5 Supprimer l'ancien port 22 de UFW
+
+Une fois que la connexion sur le port 2222 fonctionne :
+
+1. Va dans CloudPanel → **Admin Area** → **Security** → **Firewall**
+2. **Supprime** la règle `22` avec source `0.0.0.0/0`
+
+Le port 22 reste accessible via Tailscale grâce à la règle `tailscale0`.
 
 ---
 
-## 5. Configuration UFW via CloudPanel
+## 7. Installation CrowdSec
 
-### 5.1 Comprendre la gestion UFW de CloudPanel
+### 7.1 Ajouter le dépôt officiel
 
-> ⚠️ **IMPORTANT** : CloudPanel est le "master" du firewall UFW. Il stocke ses règles dans sa base SQLite (`/home/clp/htdocs/app/data/db.sq3`) et peut **écraser** les règles ajoutées directement en CLI !
-
-**Règle d'or** : Utilise l'interface CloudPanel pour toutes les règles standards. Réserve la CLI uniquement pour les règles avancées (interface Tailscale).
-
-### 5.2 Accéder à l'interface Firewall CloudPanel
-
-1. Connecte-toi à CloudPanel : `https://ton-ip:8443`
-2. Va dans **Admin Area** → **Security** → **Firewall**
-3. Tu verras les règles existantes (22, 80, 443, 8443 par défaut)
-
-### 5.3 Règles à configurer via l'interface CloudPanel
-
-Clique sur **Add Rule** pour chaque règle :
-
-| Port Range | Source | Description |
-|------------|--------|-------------|
-| `2222` | `0.0.0.0/0` | SSH Custom Port |
-| `80` | `0.0.0.0/0` | HTTP |
-| `443` | `0.0.0.0/0` | HTTPS |
-| `8443` | `100.64.0.0/10` | CloudPanel (Tailscale only) |
-
-> 💡 **Astuce sécurité** : En limitant 8443 à `100.64.0.0/10`, seules les connexions via Tailscale peuvent accéder à CloudPanel. Plus besoin de Basic Auth en front !
-
-### 5.4 Supprimer les anciennes règles trop permissives
-
-Dans l'interface CloudPanel Firewall, supprime les règles par défaut trop ouvertes :
-- Supprime la règle `8443` avec source `0.0.0.0/0` (remplacée par notre règle Tailscale)
-- Garde `22` ouvert pour le moment (on le sécurisera après avoir vérifié que Tailscale fonctionne)
-
-### 5.5 Règle Tailscale (via CLI - nécessaire)
-
-L'interface CloudPanel ne permet pas de créer des règles sur une **interface réseau** (`tailscale0`). Cette règle doit être ajoutée en CLI :
+> ⚠️ Ubuntu 24.04 a une version obsolète (1.4.6) dans ses dépôts. On utilise le dépôt officiel.
 
 ```bash
-# Autoriser TOUT le trafic entrant depuis l'interface Tailscale
-sudo ufw allow in on tailscale0 comment 'Tailscale Interface'
-
-# Vérifier
-sudo ufw status | grep tailscale
+curl -s https://install.crowdsec.net | sh
 ```
 
-> ⚠️ Cette règle peut être perdue si CloudPanel modifie UFW. On va la protéger.
-
-### 5.6 Protéger les règles CLI avec un script de restauration
-
-Crée un script qui sera exécuté régulièrement pour s'assurer que la règle Tailscale existe :
+### 7.2 Configurer le pinning APT
 
 ```bash
-sudo nano /usr/local/bin/ensure-tailscale-ufw.sh
+nano /etc/apt/preferences.d/crowdsec
 ```
 
-```bash
-#!/bin/bash
-# Ensure Tailscale UFW rule exists
-# This rule cannot be added via CloudPanel GUI
-
-if ! ufw status | grep -q "tailscale0"; then
-    ufw allow in on tailscale0 comment 'Tailscale Interface'
-    echo "$(date): Tailscale UFW rule restored" >> /var/log/tailscale-ufw.log
-fi
-```
-
-```bash
-sudo chmod +x /usr/local/bin/ensure-tailscale-ufw.sh
-```
-
-Ajoute-le au cron de root :
-
-```bash
-sudo crontab -e
-```
-
-Ajoute ces lignes :
-
-```bash
-# Vérifier la règle Tailscale au reboot et toutes les heures
-@reboot /usr/local/bin/ensure-tailscale-ufw.sh
-0 * * * * /usr/local/bin/ensure-tailscale-ufw.sh
-```
-
-### 5.7 Configuration finale recommandée
-
-Après configuration, `sudo ufw status` devrait montrer :
-
-```
-Status: active
-
-To                         Action      From
---                         ------      ----
-2222/tcp                   ALLOW       Anywhere                   # SSH Custom
-80/tcp                     ALLOW       Anywhere                   # HTTP
-443/tcp                    ALLOW       Anywhere                   # HTTPS
-8443/tcp                   ALLOW       100.64.0.0/10              # CloudPanel Tailscale
-Anywhere on tailscale0     ALLOW       Anywhere                   # Tailscale Interface
-```
-
-### 5.8 Sécuriser SSH après validation Tailscale
-
-Une fois que tu as confirmé que Tailscale fonctionne parfaitement :
-
-1. Dans CloudPanel Firewall, **supprime** la règle `22` source `0.0.0.0/0`
-2. Le SSH restera accessible via Tailscale grâce à la règle `tailscale0`
-3. Ton port custom `2222` reste accessible publiquement (avec protection CrowdSec)
-
-### 5.9 Accès d'urgence (si Tailscale échoue)
-
-**Option 1** : Console VNC/Serial Hostinger
-- Va sur hPanel Hostinger → VPS → Console
-- Tu as un accès direct sans passer par le réseau
-
-**Option 2** : Règle temporaire via CloudPanel
-- Si tu as accès à une IP publique stable, ajoute-la temporairement
-- Supprime-la après usage
-
----
-
-## 6. Installation CrowdSec
-
-### 6.1 Ajout du dépôt officiel CrowdSec
-
-> ⚠️ **Important** : Ubuntu 24.04 a une version obsolète (1.4.6) dans ses dépôts. Nous utilisons le dépôt officiel pour avoir la dernière version.
-
-```bash
-curl -s https://install.crowdsec.net | sudo sh
-```
-
-### 6.2 Configuration du pinning APT (priorité au dépôt CrowdSec)
-
-```bash
-sudo nano /etc/apt/preferences.d/crowdsec
-```
-
-Ajouter :
+Contenu :
 
 ```
 Package: *
@@ -495,32 +555,33 @@ Pin: release o=packagecloud.io/crowdsec/crowdsec,a=any,n=any,c=main
 Pin-Priority: 1001
 ```
 
-### 6.3 Mise à jour et installation
+### 7.3 Installer CrowdSec
 
 ```bash
-sudo apt update
+apt update
 
-# Vérifier que la bonne version sera installée
+# Vérifier la version
 apt-cache policy crowdsec
 
-# Installer CrowdSec
-sudo apt install crowdsec -y
+# Installer
+apt install crowdsec -y
 ```
 
-### 6.4 Vérification de l'installation
+### 7.4 Vérifier l'installation
 
 ```bash
-sudo systemctl status crowdsec
-sudo cscli version
+systemctl status crowdsec
+cscli version
 ```
 
 ---
 
-## 7. Configuration pour CloudPanel
+## 8. Configuration CrowdSec pour CloudPanel
 
-### 7.1 Structure des logs CloudPanel
+### 8.1 Structure des logs CloudPanel
 
 CloudPanel organise les logs ainsi :
+
 ```
 /home/{site-user}/logs/
 ├── nginx/
@@ -528,23 +589,19 @@ CloudPanel organise les logs ainsi :
 │   └── error.log
 └── php/
     └── error.log
-```
 
-Plus les logs globaux :
-```
 /var/log/nginx/access.log
 /var/log/nginx/error.log
 /var/log/auth.log
-/var/log/syslog
 ```
 
-### 7.2 Configuration de l'acquisition des logs
+### 8.2 Configurer l'acquisition des logs
 
 ```bash
-sudo nano /etc/crowdsec/acquis.yaml
+nano /etc/crowdsec/acquis.yaml
 ```
 
-Remplacer le contenu par :
+Remplace le contenu par :
 
 ```yaml
 #-----------------------------------------
@@ -567,7 +624,6 @@ labels:
 ---
 #-----------------------------------------
 # CloudPanel - All sites NGINX logs
-# Uses glob pattern to capture all site logs
 #-----------------------------------------
 filenames:
   - /home/*/logs/nginx/access.log
@@ -576,532 +632,277 @@ labels:
   type: nginx
 ---
 #-----------------------------------------
-# CloudPanel - All sites PHP logs (optionnel)
-#-----------------------------------------
-filenames:
-  - /home/*/logs/php/error.log
-labels:
-  type: syslog
----
-#-----------------------------------------
-# Journald for systemd services
+# Journald for SSH
 #-----------------------------------------
 journalctl_filter:
   - "_SYSTEMD_UNIT=ssh.service"
-  - "_SYSTEMD_UNIT=sshd.service"
 labels:
   type: syslog
 ```
 
-### 7.3 Vérification des permissions
-
-CrowdSec doit pouvoir lire les logs. Vérifie :
+### 8.3 Redémarrer CrowdSec
 
 ```bash
-# Tester l'accès aux logs
-sudo -u crowdsec cat /var/log/nginx/access.log > /dev/null && echo "OK" || echo "ERREUR"
-
-# Si erreur, ajouter crowdsec au groupe adm
-sudo usermod -aG adm crowdsec
-```
-
-### 7.4 Redémarrage de CrowdSec
-
-```bash
-sudo systemctl restart crowdsec
-sudo systemctl status crowdsec
+systemctl restart crowdsec
+systemctl status crowdsec
 ```
 
 ---
 
-## 8. Installation des Bouncers
+## 9. Bouncers CrowdSec
 
-### 8.1 Firewall Bouncer (nftables - recommandé pour Ubuntu 24.04)
-
-```bash
-sudo apt install crowdsec-firewall-bouncer-nftables -y
-sudo systemctl enable crowdsec-firewall-bouncer
-sudo systemctl start crowdsec-firewall-bouncer
-```
-
-Vérification :
+### 9.1 Firewall Bouncer (nftables)
 
 ```bash
-sudo systemctl status crowdsec-firewall-bouncer
-sudo cscli bouncers list
+apt install crowdsec-firewall-bouncer-nftables -y
+systemctl enable --now crowdsec-firewall-bouncer
 ```
 
-### 8.2 Nginx Bouncer (optionnel - niveau applicatif)
-
-Le bouncer Nginx permet de bloquer au niveau HTTP et d'afficher des captchas. C'est une couche supplémentaire au firewall bouncer.
+Vérifier :
 
 ```bash
-sudo apt install crowdsec-nginx-bouncer -y
-```
-
-Configuration :
-
-```bash
-sudo nano /etc/crowdsec/bouncers/crowdsec-nginx-bouncer.conf
-```
-
-Vérifier que les paramètres sont corrects :
-
-```yaml
-api_url: http://127.0.0.1:8080/
-api_key: <auto-generated>
-# Mode: ban, captcha, or allow
-mode: live
-# Enable recaptcha (optionnel)
-# recaptcha_enabled: true
-# recaptcha_site_key: <your-key>
-# recaptcha_secret_key: <your-secret>
-```
-
-Redémarrer Nginx :
-
-```bash
-sudo systemctl restart nginx
-sudo cscli bouncers list
-```
-
-> **Note** : Le bouncer Nginx modifie la config Nginx. Si tu as des problèmes, vérifie `/etc/nginx/conf.d/crowdsec_nginx.conf`.
-
----
-
-## 9. Collections et Scénarios
-
-### 9.1 Installation des collections essentielles
-
-```bash
-# Collection Linux (SSH, système)
-sudo cscli collections install crowdsecurity/linux
-
-# Collection Nginx
-sudo cscli collections install crowdsecurity/nginx
-
-# Collection HTTP générique (bots, scans, etc.)
-sudo cscli collections install crowdsecurity/http-cve
-
-# Collection base-http-scenarios (exploits web communs)
-sudo cscli collections install crowdsecurity/base-http-scenarios
-
-# WhiteLists (pour éviter les faux positifs)
-sudo cscli parsers install crowdsecurity/whitelists
-```
-
-### 9.2 Scénarios additionnels recommandés
-
-```bash
-# Brute force SSH
-sudo cscli scenarios install crowdsecurity/ssh-bf
-sudo cscli scenarios install crowdsecurity/ssh-slow-bf
-
-# Probing HTTP
-sudo cscli scenarios install crowdsecurity/http-probing
-sudo cscli scenarios install crowdsecurity/http-sensitive-files
-sudo cscli scenarios install crowdsecurity/http-bad-user-agent
-
-# CVE exploits
-sudo cscli scenarios install crowdsecurity/http-cve-2021-41773
-sudo cscli scenarios install crowdsecurity/http-cve-2021-42013
-
-# Enumération
-sudo cscli scenarios install crowdsecurity/http-path-traversal-probing
-```
-
-### 9.3 Voir ce qui est installé
-
-```bash
-sudo cscli collections list
-sudo cscli scenarios list
-sudo cscli parsers list
-```
-
-### 9.4 Recharger CrowdSec
-
-```bash
-sudo systemctl reload crowdsec
+systemctl status crowdsec-firewall-bouncer
+cscli bouncers list
 ```
 
 ---
 
-## 10. CrowdSec Console
+## 10. Collections et Scénarios
 
-La Console CrowdSec est un dashboard web gratuit pour monitorer tes instances.
+### 10.1 Installer les collections essentielles
 
-### 10.1 Créer un compte
+```bash
+# Linux (SSH, système)
+cscli collections install crowdsecurity/linux
+
+# Nginx
+cscli collections install crowdsecurity/nginx
+
+# HTTP générique
+cscli collections install crowdsecurity/base-http-scenarios
+
+# Whitelists
+cscli parsers install crowdsecurity/whitelists
+```
+
+### 10.2 Recharger CrowdSec
+
+```bash
+systemctl reload crowdsec
+```
+
+### 10.3 Vérifier les installations
+
+```bash
+cscli collections list
+cscli scenarios list
+```
+
+---
+
+## 11. CrowdSec Console
+
+### 11.1 Créer un compte
 
 1. Va sur [https://app.crowdsec.net](https://app.crowdsec.net)
 2. Crée un compte gratuit
 3. Dans "Security Engines", clique sur "Add Security Engine"
 4. Copie la clé d'enrollment
 
-### 10.2 Enroller ton serveur
+### 11.2 Enroller le VPS
 
 ```bash
-sudo cscli console enroll <TA-CLE-DENROLLMENT>
+cscli console enroll <TA-CLE-DENROLLMENT>
 ```
 
-Exemple :
+### 11.3 Valider sur la Console web
+
+Retourne sur la Console et accepte la demande d'enrollment.
+
+### 11.4 Activer le partage communautaire
 
 ```bash
-sudo cscli console enroll cl7xxxxxxxxxxxxxxxxxxxxx
-```
-
-### 10.3 Valider l'enrollment
-
-Retourne sur la Console web et accepte la demande d'enrollment.
-
-### 10.4 Activer le partage de données (recommandé)
-
-```bash
-sudo cscli console enable -a
-sudo systemctl reload crowdsec
-```
-
-Cela active :
-- Le partage d'alertes avec la communauté
-- La réception de la blocklist communautaire
-
-### 10.5 Vérifier le statut
-
-```bash
-sudo cscli console status
+cscli console enable -a
+systemctl reload crowdsec
 ```
 
 ---
 
-## 11. Whitelisting intelligent
+## 12. Whitelisting Tailscale
 
-### 11.1 Whitelister le réseau Tailscale (CRUCIAL)
-
-C'est ici que la magie opère pour ton workflow nomade. En whitelistant le subnet Tailscale, tu ne seras **jamais** bloqué, peu importe depuis quel WiFi d'hôtel tu te connectes.
+### 12.1 Créer le fichier de whitelist
 
 ```bash
-sudo nano /etc/crowdsec/parsers/s02-enrich/my-whitelists.yaml
+nano /etc/crowdsec/parsers/s02-enrich/my-whitelists.yaml
 ```
+
+Contenu :
 
 ```yaml
 name: crowdsecurity/my-whitelists
-description: "Custom whitelists for nomad developer"
+description: "Whitelist for Tailscale network"
 whitelist:
   reason: "Tailscale network - always trusted"
   cidr:
-    # Tailscale CGNAT range - TOUTES tes connexions Tailscale
     - "100.64.0.0/10"
-    
-    # Réseaux privés standards (au cas où)
     - "10.0.0.0/8"
     - "172.16.0.0/12"
     - "192.168.0.0/16"
-    
-    # Localhost
     - "127.0.0.0/8"
 ```
 
-> **Pourquoi `100.64.0.0/10` ?** C'est le range CGNAT utilisé par Tailscale pour toutes les IPs de ton réseau mesh. Que tu sois à Tokyo, New York ou Paris, ton Steam Deck aura toujours une IP dans ce range.
-
-### 11.2 Whitelist additionnelle (optionnel)
-
-Si tu as une IP fixe à domicile :
+### 12.2 Appliquer
 
 ```bash
-sudo nano /etc/crowdsec/parsers/s02-enrich/home-whitelist.yaml
-```
+systemctl reload crowdsec
 
-```yaml
-name: crowdsecurity/home-whitelist
-description: "Home IP whitelist"
-whitelist:
-  reason: "Home static IP"
-  ip:
-    - "1.2.3.4"  # Ton IP fixe domicile (si tu en as une)
-```
-
-### 11.3 Appliquer les whitelists
-
-```bash
-sudo systemctl reload crowdsec
-
-# Vérifier que les parsers sont chargés
-sudo cscli parsers list | grep whitelist
-```
-
-### 11.4 Whitelist express (si tu te fais bannir accidentellement)
-
-```bash
-# Voir les décisions actives
-sudo cscli decisions list
-
-# Supprimer un ban spécifique
-sudo cscli decisions delete -i 100.x.x.x
-
-# Si tu ne peux plus accéder au VPS :
-# 1. Utilise la console Hostinger (VNC/Serial Console)
-# 2. Ou connecte-toi via l'IP publique depuis un autre réseau
+# Vérifier
+cscli parsers list | grep whitelist
 ```
 
 ---
 
-## 12. Mises à jour automatiques
+## 13. Mises à jour automatiques
 
-### 12.1 Mises à jour de sécurité Ubuntu
-
-```bash
-sudo apt install unattended-upgrades -y
-sudo dpkg-reconfigure -plow unattended-upgrades
-```
-
-Choisir "Yes" pour activer.
-
-### 12.2 Configuration avancée (optionnel)
+### 13.1 Mises à jour Ubuntu
 
 ```bash
-sudo nano /etc/apt/apt.conf.d/50unattended-upgrades
+apt install unattended-upgrades -y
+dpkg-reconfigure -plow unattended-upgrades
 ```
 
-Ajouter les dépôts CrowdSec si souhaité :
+Choisis "Yes".
 
-```
-Unattended-Upgrade::Allowed-Origins {
-    "${distro_id}:${distro_codename}";
-    "${distro_id}:${distro_codename}-security";
-    "${distro_id}ESMApps:${distro_codename}-apps-security";
-    "${distro_id}ESM:${distro_codename}-infra-security";
-    "packagecloud.io/crowdsec/crowdsec:any";
-};
-```
-
-### 12.3 Mise à jour automatique du hub CrowdSec
-
-CrowdSec peut mettre à jour ses scénarios automatiquement :
+### 13.2 Mises à jour CrowdSec Hub
 
 ```bash
-# Créer un cron job
-sudo crontab -e
+crontab -e
 ```
 
-Ajouter :
+Ajoute :
 
 ```bash
-# Mise à jour hub CrowdSec tous les jours à 4h du matin
+# Mise à jour hub CrowdSec tous les jours à 4h
 0 4 * * * /usr/bin/cscli hub update && /usr/bin/cscli hub upgrade --all
 ```
 
 ---
 
-## 13. Commandes de maintenance
+## 14. Commandes de maintenance
 
-### 13.1 Monitoring quotidien
+### 14.1 Monitoring
 
 ```bash
-# Voir les métriques globales
-sudo cscli metrics
+# Métriques globales
+cscli metrics
 
-# Alertes des dernières 24h
-sudo cscli alerts list --since 24h
+# Alertes récentes
+cscli alerts list --since 24h
 
-# Décisions actives (IPs bannies)
-sudo cscli decisions list
+# IPs bannies
+cscli decisions list
 
-# Statut des services
-sudo systemctl status crowdsec
-sudo systemctl status crowdsec-firewall-bouncer
+# Statut services
+systemctl status crowdsec
+systemctl status crowdsec-firewall-bouncer
 ```
 
-### 13.2 Gestion des décisions
+### 14.2 Gestion des bans
 
 ```bash
-# Bannir une IP manuellement (4 heures)
-sudo cscli decisions add -i 1.2.3.4 -t ban -d 4h -r "Manual ban: suspicious activity"
+# Bannir une IP (4h)
+cscli decisions add -i 1.2.3.4 -t ban -d 4h -r "Manual ban"
 
-# Bannir un range IP
-sudo cscli decisions add -r 1.2.3.0/24 -t ban -d 24h -r "Range ban"
+# Débannir
+cscli decisions delete -i 1.2.3.4
 
-# Supprimer un ban
-sudo cscli decisions delete -i 1.2.3.4
-
-# Supprimer tous les bans
-sudo cscli decisions delete --all
+# Tout débannir
+cscli decisions delete --all
 ```
 
-### 13.3 Inspection des alertes
+### 14.3 Mise à jour manuelle du hub
 
 ```bash
-# Liste des alertes
-sudo cscli alerts list
-
-# Détail d'une alerte
-sudo cscli alerts inspect <ALERT_ID>
-
-# Supprimer les anciennes alertes
-sudo cscli alerts delete --all
-```
-
-### 13.4 Mise à jour du hub
-
-```bash
-# Mettre à jour l'index
-sudo cscli hub update
-
-# Lister les mises à jour disponibles
-sudo cscli hub list -a
-
-# Tout mettre à jour
-sudo cscli hub upgrade --all
-
-# Recharger après mise à jour
-sudo systemctl reload crowdsec
-```
-
-### 13.5 Debug
-
-```bash
-# Logs CrowdSec
-sudo journalctl -u crowdsec -e --no-pager
-
-# Logs du bouncer firewall
-sudo journalctl -u crowdsec-firewall-bouncer -e --no-pager
-
-# Tester le parsing des logs
-sudo cscli explain --file /var/log/nginx/access.log --type nginx
+cscli hub update
+cscli hub upgrade --all
+systemctl reload crowdsec
 ```
 
 ---
 
-## 14. Tests et validation
+## 15. Tests et validation
 
-### 14.1 Test du firewall bouncer
+### 15.1 Tester le firewall bouncer
 
-Depuis une autre machine (ou via un VPN) :
+Depuis une machine NON connectée à Tailscale, fais plusieurs tentatives SSH échouées :
 
 ```bash
-# Tente plusieurs connexions SSH échouées
-for i in {1..10}; do ssh -p 2222 fakeuser@ton-ip-vps; done
+for i in {1..10}; do ssh -p 2222 fakeuser@ip-publique-vps; done
 ```
 
-Puis sur ton serveur :
+Sur le VPS :
 
 ```bash
-sudo cscli decisions list
-# Tu devrais voir l'IP bannie
+cscli decisions list
 ```
 
-### 14.2 Test du scénario HTTP
+L'IP devrait être bannie.
+
+### 15.2 Vérifier que Tailscale n'est pas banni
+
+Depuis ton PC ou Steam Deck (connecté à Tailscale) :
 
 ```bash
-# Simulation d'un scan Nikto (depuis une autre machine)
-curl -A "Nikto" http://ton-domaine.com/
-curl http://ton-domaine.com/wp-admin/
-curl http://ton-domaine.com/../../../etc/passwd
-```
-
-Vérifier :
-
-```bash
-sudo cscli alerts list --since 1h
-```
-
-### 14.3 Test Tailscale (IMPORTANT)
-
-Depuis ton Steam Deck connecté à un WiFi quelconque :
-
-```bash
-# Vérifie que Tailscale est connecté
-tailscale status
-
-# Test SSH via Tailscale
 ssh vps
-
-# Tu devrais te connecter instantanément, sans être bloqué par CrowdSec
 ```
 
-### 14.4 Vérification que tout fonctionne
+Ça doit fonctionner même après le test précédent.
+
+### 15.3 Vérifier les métriques
 
 ```bash
-# Métriques - vérifie que les logs sont parsés
-sudo cscli metrics
-
-# Tu devrais voir des lignes parsed pour nginx et syslog
+cscli metrics
 ```
 
-Output attendu (exemple) :
-
-```
-╭─────────────────────────────────────────────────────────────╮
-│                        Acquisition Metrics                   │
-├─────────────────────────────────────────────────────────────┤
-│ Source                                │ Lines read │ Lines parsed │
-├───────────────────────────────────────┼────────────┼──────────────┤
-│ file:/var/log/nginx/access.log        │ 1234       │ 1234         │
-│ file:/var/log/auth.log                │ 567        │ 567          │
-│ file:/home/*/logs/nginx/access.log    │ 890        │ 890          │
-╰───────────────────────────────────────┴────────────┴──────────────╯
-```
+Tu devrais voir des lignes parsées pour nginx et syslog.
 
 ---
 
-## 15. Workflow nomade - Checklist escale
+## 16. Workflow nomade
 
-### Ta routine à chaque nouvelle destination
-
-**Temps total : ~30 secondes** ⏱️
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│  🛬 ARRIVÉE À L'HÔTEL                                          │
-├─────────────────────────────────────────────────────────────────┤
-│  1. Connecte-toi au WiFi de l'hôtel                            │
-│  2. Ouvre le Steam Deck en mode Desktop                        │
-│  3. Vérifie l'icône Tailscale (barre des tâches)               │
-│     → Si déconnecté : clic droit → Connect                     │
-│  4. Ouvre Konsole et tape : ssh vps                            │
-│  5. Tu es connecté ! 🎉                                        │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### Pourquoi ça "just works"
-
-| Problème classique | Solution Tailscale |
-|-------------------|-------------------|
-| IP d'hôtel inconnue | Tailscale traverse le NAT automatiquement |
-| Firewall d'hôtel restrictif | Tailscale utilise DERP relay si nécessaire |
-| CrowdSec pourrait bloquer | Subnet `100.64.0.0/10` whitelisté |
-| Clé SSH différente par device | SSH config avec `Host vps` |
-
-### En cas de problème
+### 16.1 Checklist nouvelle escale
 
 ```bash
-# 1. Tailscale ne se connecte pas ?
+# 1. Connecte-toi au WiFi de l'hôtel
+
+# 2. Vérifie que Tailscale est connecté
 tailscale status
-sudo systemctl restart tailscaled
 
-# 2. SSH timeout ?
-# Vérifie que le VPS est dans ton réseau Tailscale
-tailscale ping 100.x.x.30  # IP Tailscale du VPS
-
-# 3. "Connection refused" ?
-# Le VPS est peut-être reboot. Attends 2-3 minutes.
-
-# 4. Tu t'es fait bannir ? (peu probable avec Tailscale)
-# Utilise la console VNC de Hostinger pour débannir
-sudo cscli decisions delete --all
+# 3. Travaille !
+ssh vps
 ```
 
-### Backup : Accès via IP publique
+C'est tout. Pas de configuration, pas de whitelist à ajouter.
 
-Si Tailscale a un souci (rare), tu peux toujours utiliser l'IP publique :
+### 16.2 En cas de problème
 
-```bash
-ssh vps-public
-```
+| Problème | Solution |
+|----------|----------|
+| Tailscale ne se connecte pas | `sudo systemctl restart tailscaled` |
+| SSH timeout | `tailscale ping 100.x.x.30` pour tester |
+| Connection refused | VPS peut-être reboot, attends 2-3 min |
+| Banni par erreur | Console VNC Hostinger → `cscli decisions delete --all` |
 
-> ⚠️ Attention : Sans Tailscale, ton IP d'hôtel n'est pas whitelistée. Évite les erreurs de mot de passe !
+### 16.3 Révocation d'urgence (perte d'un device)
+
+Si tu perds ton Steam Deck :
+
+1. Sur le VPS : `nano ~/.ssh/authorized_keys` → Supprime la ligne `joey-steamdeck`
+2. Sur Tailscale : [https://login.tailscale.com/admin/machines](https://login.tailscale.com/admin/machines) → Supprime le Steam Deck
 
 ---
 
-## Récapitulatif de l'architecture
+## Récapitulatif architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -1109,7 +910,6 @@ ssh vps-public
 │                                                                 │
 │    ┌──────────────┐         ┌──────────────┐                   │
 │    │ Steam Deck   │         │  PC Windows  │                   │
-│    │ (Tokyo)      │         │  (Paris)     │                   │
 │    │ WiFi Hôtel   │         │  Domicile    │                   │
 │    └──────┬───────┘         └──────┬───────┘                   │
 │           │                        │                           │
@@ -1117,30 +917,24 @@ ssh vps-public
 │                    │                                           │
 │           ┌────────▼────────┐                                  │
 │           │   TAILSCALE     │                                  │
-│           │   Mesh Network  │                                  │
 │           │  100.64.0.0/10  │                                  │
 │           └────────┬────────┘                                  │
-│                    │ (chiffré WireGuard)                       │
 └────────────────────┼───────────────────────────────────────────┘
                      │
                      ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                    VPS HOSTINGER                                │
 ├─────────────────────────────────────────────────────────────────┤
-│  UFW (géré via CloudPanel GUI + script Tailscale)              │
-│      → 80, 443, 2222 : ouverts au public                       │
-│      → 8443 : Tailscale uniquement (100.64.0.0/10)             │
-│      → tailscale0 : tout autorisé (via script cron)            │
+│  UFW (CloudPanel GUI + script Tailscale)                       │
+│      → 80, 443, 2222 : publics                                 │
+│      → 8443 : Tailscale only                                   │
+│      → tailscale0 : tout autorisé                              │
 ├─────────────────────────────────────────────────────────────────┤
-│  CrowdSec Firewall Bouncer                                      │
-│      → 100.64.0.0/10 WHITELISTÉ (jamais banni via Tailscale)   │
-│      → Autres IPs : analyse et ban si malveillantes            │
+│  CrowdSec                                                       │
+│      → 100.64.0.0/10 whitelisté                                │
+│      → Autres IPs : analyse + ban                              │
 ├─────────────────────────────────────────────────────────────────┤
-│  NGINX (CloudPanel)                                             │
-│      → Windshear Ahead, Piwigo, Laravel apps                   │
-├─────────────────────────────────────────────────────────────────┤
-│  CrowdSec Engine                                                │
-│      → Analyse logs, partage CTI                               │
+│  CloudPanel + NGINX + PHP-FPM                                   │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -1148,51 +942,30 @@ ssh vps-public
 
 ## Checklist finale
 
-### Installation serveur
-- [ ] SSH sur port personnalisé (2222)
-- [ ] Authentification SSH par clé uniquement
-- [ ] UFW configuré via **interface CloudPanel** (Admin → Security → Firewall)
-- [ ] Règle 8443 limitée à `100.64.0.0/10` (Tailscale only)
-- [ ] Script `/usr/local/bin/ensure-tailscale-ufw.sh` créé et dans cron
-- [ ] CrowdSec installé depuis le dépôt officiel
-- [ ] acquis.yaml configuré pour CloudPanel (`/home/*/logs/nginx/*.log`)
-- [ ] Firewall bouncer (nftables) installé et actif
-- [ ] Collections linux et nginx installées
-- [ ] Console CrowdSec connectée
-- [ ] Whitelist Tailscale `100.64.0.0/10` dans CrowdSec
-- [ ] Mises à jour automatiques configurées
+### Serveur
+- [ ] Tailscale installé et "Disable key expiry" activé
+- [ ] CrowdSec installé depuis dépôt officiel
+- [ ] Firewall bouncer nftables actif
+- [ ] acquis.yaml configuré pour `/home/*/logs/nginx/*.log`
+- [ ] Whitelist `100.64.0.0/10` dans CrowdSec
+- [ ] SSH sur port 2222, password auth désactivé
+- [ ] UFW : 8443 limité à `100.64.0.0/10`
+- [ ] Script `ensure-tailscale-ufw.sh` dans cron
 
-### Configuration Tailscale
-- [ ] Compte Tailscale créé
-- [ ] Tailscale installé sur VPS
-- [ ] Tailscale installé sur PC Windows
-- [ ] Tailscale installé sur Steam Deck
-- [ ] "Disable key expiry" activé pour le VPS
-- [ ] Test de connexion SSH via Tailscale réussi
+### Devices
+- [ ] Tailscale sur PC Windows
+- [ ] Tailscale sur Steam Deck
+- [ ] Clé SSH `joey-pc-windows` générée et déployée
+- [ ] Clé SSH `joey-steamdeck` générée et déployée
+- [ ] Fichier `~/.ssh/config` configuré (port 2222)
 
-### Clés SSH
-- [ ] Clé SSH générée sur PC Windows (`joey-pc-windows`)
-- [ ] Clé SSH générée sur Steam Deck (`joey-steamdeck`)
-- [ ] Les deux clés ajoutées dans `authorized_keys` du VPS
-- [ ] Fichier `~/.ssh/config` configuré sur les deux devices
-
-### Tests finaux
-- [ ] `ssh vps` fonctionne depuis PC Windows
-- [ ] `ssh vps` fonctionne depuis Steam Deck (via WiFi quelconque)
-- [ ] Test de ban SSH réussi (depuis IP non-Tailscale)
-- [ ] Métriques CrowdSec affichent des logs parsés
+### Tests
+- [ ] `ssh vps` fonctionne depuis PC
+- [ ] `ssh vps` fonctionne depuis Steam Deck
+- [ ] CloudPanel accessible via `https://100.x.x.30:8443`
+- [ ] IP externe bannie après brute-force test
+- [ ] IP Tailscale jamais bannie
 
 ---
 
-## Ressources
-
-- [Documentation CrowdSec](https://docs.crowdsec.net/)
-- [Hub CrowdSec (scénarios)](https://hub.crowdsec.net/)
-- [Console CrowdSec](https://app.crowdsec.net/)
-- [Documentation CloudPanel](https://www.cloudpanel.io/docs/v2/)
-- [Documentation Tailscale](https://tailscale.com/kb/)
-- [Tailscale Admin Console](https://login.tailscale.com/admin/)
-
----
-
-*Guide créé le 24/12/2024 - Adapté pour Ubuntu 24.04 LTS + CloudPanel + Tailscale (workflow nomade)*
+*Guide v2 - Corrigé pour cohérence et commandes Windows*
