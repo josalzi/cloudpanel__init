@@ -835,7 +835,7 @@ cscli scenarios list
 
 1. Va sur [https://app.crowdsec.net](https://app.crowdsec.net)
 2. Crée un compte gratuit
-3. Dans "Security Engines", clique sur "Add Security Engine"
+3. Dans "Security Engines", clique sur "Enroll command"
 4. Copie la clé d'enrollment
 
 ### 11.2 Enroller le VPS
