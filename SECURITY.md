@@ -646,11 +646,61 @@ apt-cache policy crowdsec
 apt install crowdsec -y
 ```
 
-### 7.4 Vérifier l'installation
+### 7.4 Résoudre le conflit de port (CloudPanel)
+
+> ⚠️ **Problème fréquent** : CrowdSec utilise le port 8080 par défaut, mais CloudPanel/Nginx l'utilise déjà (Varnish/reverse proxy). Tu verras cette erreur :
+> ```
+> FATAL local API server stopped with error: listening on 127.0.0.1:8080: bind: address already in use
+> ```
+
+**Vérifier si le port 8080 est utilisé** :
 
 ```bash
+ss -tlnp | grep 8080
+```
+
+Si Nginx apparaît, il faut changer le port de CrowdSec.
+
+**Changer le port de l'API CrowdSec** (on utilise 6969) :
+
+```bash
+nano /etc/crowdsec/config.yaml
+```
+
+Trouve la section `api` → `server` et modifie :
+
+```yaml
+api:
+  server:
+    listen_uri: 127.0.0.1:6969
+```
+
+**Mettre à jour les credentials du client** :
+
+```bash
+nano /etc/crowdsec/local_api_credentials.yaml
+```
+
+Change l'URL :
+
+```yaml
+url: http://127.0.0.1:6969/
+```
+
+### 7.5 Démarrer CrowdSec
+
+```bash
+systemctl restart crowdsec
 systemctl status crowdsec
+```
+
+Tu devrais voir `Active: active (running)`.
+
+### 7.6 Vérifier l'installation
+
+```bash
 cscli version
+cscli metrics
 ```
 
 ---
