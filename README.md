@@ -126,7 +126,7 @@ chmod -R 755 storage bootstrap/cache
 
 ---
 
-## Vhost CloudPanel
+## 8. Vhost CloudPanel
 
 ```bash
 # ===========================================
@@ -246,3 +246,13 @@ server {
   }
 }
 ```
+
+---
+
+## 9. CRON
+
+```bash
+/usr/bin/php8.5 /home/lambda-aero-elogbook/htdocs/e-logbook.lambda-aero.com/artisan schedule:run >> /dev/null 2>&1
+```
+
+---
