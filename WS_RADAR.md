@@ -37,6 +37,28 @@ sudo apt-get install -y \
     libxshmfence1
 ```
 
+## Installation Playwright
+
+```bash
+# Naviguer dans le dossier playwright
+cd /chemin/vers/windshear-radar/playwright
+
+# Installer les dependances Node
+npm install
+
+# Installer Chromium pour Playwright
+npx playwright install chromium
+
+# Installer les dependances systeme identifiees par Playwright
+# npx playwright install-deps chromium
+```
+
+## Verification
+
+```bash
+node -e "const { chromium } = require('playwright'); (async () => { const b = await chromium.launch(); const p = await b.newPage(); await p.goto('about:blank'); console.log('Playwright OK'); await b.close(); })()"
+```
+
 # Rust
 
 ```bash
