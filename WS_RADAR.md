@@ -63,11 +63,17 @@ sudo nano /etc/supervisor/conf.d/lightning-listener.conf
 
 ```ini
 [program:lightning-listener]
-command=php /path/to/artisan lightning:listen -q
+process_name=%(program_name)s
+command=php /home/radar-windshear/htdocs/radar.windshear.fr/artisan lightning:listen --debug
 autostart=true
 autorestart=true
-user=www-data
-stdout_logfile=/path/to/storage/logs/lightning-listener.log
+user=radar-windshear
+numprocs=1
+redirect_stderr=true
+stdout_logfile=/home/radar-windshear/htdocs/radar.windshear.fr/storage/logs/lightning-listener.log
+stdout_logfile_maxbytes=10MB
+stdout_logfile_backups=3
+stopwaitsecs=3600
 ```
 
 ```bash
