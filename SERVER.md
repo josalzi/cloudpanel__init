@@ -7,7 +7,7 @@ You can safely disable unused PHP-FPM versions in CloudPanel. Based on my testin
 systemctl stop php7.1-fpm
 systemctl disable php7.1-fpm
 # Repeat for other unused versions
-
+```
 
 
 --
