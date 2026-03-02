@@ -348,14 +348,13 @@ Switch to the site user and clone the repo:
 
 ```bash
 su - <site-user>
-cd htdocs/
+cd htdocs/<domain>
 
 # Remove the default directory CloudPanel created
-rm -rf <domain>
+rm -rf <all files / folders>
 
-# Clone your repository
-git clone git@github.com:josalzi/<repo>.git <domain>
-cd <domain>
+# Clone your repository /!\ Note the "."
+git clone git@github.com:josalzi/<repo>.git .
 
 # Install dependencies
 composer install --no-dev --optimize-autoloader
