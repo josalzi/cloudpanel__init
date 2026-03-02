@@ -11,7 +11,7 @@ apt install python3-eccodes python3-cfgrib
 ```
 
 
-# img2webp
+# Img2WebP
 
 ```bash
 sudo apt install webp
@@ -53,4 +53,23 @@ sudo apt install build-essential pkg-config
 sudo su <utilisateur_cloudpanel>
 rustc --version
 cargo --version
+```
+
+# Supervisor: lightning MQTT
+
+```bash
+sudo nano /etc/supervisor/conf.d/lightning-listener.conf
+```
+
+```ini
+[program:lightning-listener]
+command=php /path/to/artisan lightning:listen -q
+autostart=true
+autorestart=true
+user=www-data
+stdout_logfile=/path/to/storage/logs/lightning-listener.log
+```
+
+```bash
+sudo supervisorctl restart lightning-listener
 ```
