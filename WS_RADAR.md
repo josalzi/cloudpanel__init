@@ -77,5 +77,7 @@ stopwaitsecs=3600
 ```
 
 ```bash
+sudo supervisorctl reread
+sudo supervisorctl update
 sudo supervisorctl restart lightning-listener
 ```
