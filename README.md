@@ -256,3 +256,23 @@ server {
 ```
 
 ---
+
+## 10. Fix 403
+
+Se placer dans le dossier de l'application
+
+Soft:
+```bash
+chmod 755 .
+```
+
+Hard:
+```bash
+chmod 644 public/.htaccess
+chmod 755 public/
+chmod 755 .
+find . -type d -exec chmod 755 {} \;
+find . -type f -exec chmod 644 {} \;
+chmod -R 775 storage
+chmod -R 775 bootstrap/cache
+```
